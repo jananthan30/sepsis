@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sepsis Guardian AI</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { background-color: #f0f2f5; font-family: 'Segoe UI', sans-serif; }
+        .main-card { border: none; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); }
+        .section-title { font-size: 0.9rem; font-weight: 700; color: #6c757d; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 15px; margin-top: 10px;}
+        .result-box { background: white; border-radius: 15px; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; transition: all 0.3s; }
+        .score-display { font-size: 4rem; font-weight: 800; color: #2c3e50; }
+        .badge-status { font-size: 1.2rem; padding: 10px 20px; margin-bottom: 15px; }
+    </style>
+</head>
+<body>
+
+<div class="container py-5">
+    <div class="row justify-content-center">
+        <div class="col-lg-12">
+            <div class="d-flex align-items-center justify-content-between mb-4">
+                <div>
+                    <h2 class="fw-bold text-primary">🏥 Sepsis Guardian</h2>
+                    <p class="text-muted mb-0">Time-Aware Deep Learning System (v3.0)</p>
+                </div>
+                <div class="text-end">
+                    <span class="badge bg-dark">MIMIC-IV Trained</span>
+                    <span class="badge bg-info text-dark">PhysioNet Validated</span>
+                </div>
+            </div>
+
+            <!-- Mode Switcher -->
+            <ul class="nav nav-pills mb-4" id="modeTabs">
+                <li class="nav-item">
+                    <a class="nav-link active" href="#" onclick="switchMode('manual')">Manual Entry</a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="#" onclick="switchMode('demo')">Live Monitor Demo</a>
+                </li>
+            </ul>
+
+            <!-- Clinical Disclaimer -->
+            <div class="alert alert-warning border-warning shadow-sm d-flex align-items-center mb-4" role="alert">
+                <i class="bi bi-exclamation-triangle-fill fs-4 me-3 text-warning"></i>
+                <div>
+                    <strong>⚠️ Clinical Context:</strong> This model is trained on <strong>ICU Data (MIMIC-IV)</strong>. 
+                    It is specialized for <strong>critical care monitoring</strong> and assumes patients are already hospitalized. 
+                    Predicting on healthy or outpatient data may yield <u>false positives</u> due to 'Test Ordering Bias'.
+                </div>
+            </div>
+
+            <div class="row">
+                <!-- Input Form (Manual Mode) -->
+                <div class="col-md-7" id="manualView">
+                    <div class="card main-card p-4 h-100">
+                        <form id="sepsisForm">
+                            <!-- ... (Existing Form Content) ... -->
+                            <div class="section-title">Patient Demographics</div>
+                            <div class="row g-3 mb-4">
+                                <div class="col-md-6">
+                                    <input type="number" id="age" class="form-control form-control-lg" placeholder="Age" required>
+                                </div>
+                                <div class="col-md-6">
+                                    <select id="gender" class="form-select form-select-lg">
+                                        <option value="M">Male</option>
+                                        <option value="F">Female</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="section-title">Vital Signs</div>
+                            <div class="row g-3 mb-4">
+                                <div class="col-md-4">
+                                    <label class="form-label small fw-bold text-muted">Heart Rate</label>
+                                    <input type="number" id="hr" class="form-control" placeholder="bpm (60-100)">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label small fw-bold text-muted">Sys BP</label>
+                                    <input type="number" id="sbp" class="form-control" placeholder="mmHg (90-120)">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label small fw-bold text-muted">O2 Saturation</label>
+                                    <input type="number" id="o2" class="form-control" placeholder="% (95-100)">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small fw-bold text-muted">Resp Rate</label>
+                                    <input type="number" id="rr" class="form-control" placeholder="bpm (12-20)">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small fw-bold text-muted">Temperature</label>
+                                    <input type="number" id="temp" class="form-control" placeholder="°C (36.5-37.3)" step="0.1">
+                                </div>
+                            </div>
+
+                            <div class="section-title">Lab Values (Standard MIMIC-IV Units)</div>
+                            <div class="alert alert-light border small text-muted mb-3">
+                                <i class="bi bi-info-circle"></i> <strong>Critical:</strong> For WBC & Platelets, use <b>K/uL</b> (e.g., enter <b>11.0</b> for 11,000).
+                            </div>
+                            <div class="row g-3">
+                                <div class="col-md-3">
+                                    <label class="form-label small fw-bold text-muted">Lactate</label>
+                                    <input type="number" id="lactate" class="form-control" placeholder="mmol/L (<2.0)" step="0.1">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small fw-bold text-muted">WBC</label>
+                                    <input type="number" id="wbc" class="form-control" placeholder="K/uL (4.5-11.0)" step="0.1">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small fw-bold text-muted">Creatinine</label>
+                                    <input type="number" id="creat" class="form-control" placeholder="mg/dL (0.7-1.3)" step="0.1">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small fw-bold text-muted">Glucose</label>
+                                    <input type="number" id="glucose" class="form-control" placeholder="mg/dL (70-100)">
+                                </div>
+                                
+                                <div class="col-md-3">
+                                    <label class="form-label small fw-bold text-muted">Troponin</label>
+                                    <input type="number" id="trop" class="form-control" placeholder="ng/mL (<0.04)" step="0.01">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small fw-bold text-muted">Lipase</label>
+                                    <input type="number" id="lipase" class="form-control" placeholder="U/L (<60)">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small fw-bold text-muted">Bicarb</label>
+                                    <input type="number" id="bicarb" class="form-control" placeholder="mEq/L (23-29)">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small fw-bold text-muted">Platelets</label>
+                                    <input type="number" id="plt" class="form-control" placeholder="K/uL (150-400)">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small fw-bold text-muted">Bilirubin</label>
+                                    <input type="number" id="bili" class="form-control" placeholder="mg/dL (0.1-1.2)" step="0.1">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small fw-bold text-muted">BUN</label>
+                                    <input type="number" id="bun" class="form-control" placeholder="mg/dL (7-20)">
+                                </div>
+                            </div>
+
+                            <div class="d-grid gap-2 d-md-flex justify-content-md-end mt-5">
+                                <button type="button" class="btn btn-outline-secondary btn-lg me-md-2" onclick="resetForm()">Reset Form</button>
+                                <button type="button" class="btn btn-primary btn-lg flex-grow-1" onclick="predict()">Analyze Risk</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- Demo View (Live Monitor) -->
+                <div class="col-md-7" id="demoView" style="display:none;">
+                    <div class="card main-card p-4 bg-dark text-white h-100 border-0">
+                        <div class="d-flex justify-content-between align-items-center mb-4">
+                            <div class="d-flex gap-2">
+                                <select id="patientSelect" class="form-select bg-secondary text-white border-0" style="width: 200px;">
+                                    <option value="p100001">Patient 1 (Healthy)</option>
+                                    <option value="p100002">Patient 2 (Sepsis Fast)</option>
+                                    <option value="p100003">Patient 3 (Recovering)</option>
+                                    <option value="p100004">Patient 4 (Stable)</option>
+                                    <option value="p100005">Patient 5 (Critical)</option>
+                                </select>
+                                <button class="btn btn-success" onclick="startSimulation()"><i class="bi bi-play-fill"></i> Start</button>
+                                <button class="btn btn-warning text-white" onclick="pauseSimulation()"><i class="bi bi-pause-fill"></i> Pause</button>
+                                <button class="btn btn-danger" onclick="stopSimulation()"><i class="bi bi-stop-fill"></i> Stop</button>
+                                <button class="btn btn-info text-white ms-2" onclick="showPatientJourney()"><i class="bi bi-graph-up"></i> Patient Journey</button>
+                            </div>
+                            <div class="text-end">
+                                <small class="text-muted d-block">ICU Hour</small>
+                                <span id="simHour" class="fs-3 fw-bold font-monospace">00:00</span>
+                            </div>
+                        </div>
+
+                        <!-- Vital Signs Grid -->
+                        <div class="row g-3 mb-4">
+                            <div class="col-6">
+                                <div class="p-3 rounded bg-secondary bg-opacity-25 border border-secondary">
+                                    <div class="small text-info">HEART RATE</div>
+                                    <div class="d-flex align-items-end gap-2">
+                                        <span id="simHR" class="display-4 fw-bold text-white font-monospace">--</span>
+                                        <small class="mb-2">bpm</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="p-3 rounded bg-secondary bg-opacity-25 border border-secondary">
+                                    <div class="small text-warning">SYS BP</div>
+                                    <div class="d-flex align-items-end gap-2">
+                                        <span id="simSBP" class="display-4 fw-bold text-white font-monospace">--</span>
+                                        <small class="mb-2">mmHg</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="p-3 rounded bg-secondary bg-opacity-25 border border-secondary">
+                                    <div class="small text-success">O2 SAT</div>
+                                    <div class="d-flex align-items-end gap-2">
+                                        <span id="simO2" class="display-4 fw-bold text-white font-monospace">--</span>
+                                        <small class="mb-2">%</small>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="p-3 rounded bg-secondary bg-opacity-25 border border-secondary">
+                                    <div class="small text-danger">TEMP</div>
+                                    <div class="d-flex align-items-end gap-2">
+                                        <span id="simTemp" class="display-4 fw-bold text-white font-monospace">--</span>
+                                        <small class="mb-2">°C</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Recent Labs Feed -->
+                        <div class="bg-black bg-opacity-50 p-3 rounded flex-grow-1" style="max-height: 200px; overflow-y: auto;">
+                            <h6 class="text-muted border-bottom border-secondary pb-2 mb-2">Lab Results Feed</h6>
+                            <div id="labFeed" class="font-monospace small">
+                                <div class="text-muted fst-italic">Waiting for new results...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Output Panel -->
+                <div class="col-md-5">
+                    <div class="d-flex flex-column gap-3 h-100">
+                        
+                        <!-- Prediction Card -->
+                        <div class="result-box shadow-sm p-4" id="resultCard">
+                            <h5 class="text-muted mb-4">Real-Time Analysis</h5>
+                            <div id="riskScore" class="score-display">--%</div>
+                            <span id="riskStatus" class="badge bg-secondary badge-status">Waiting for data...</span>
+                            <p id="riskMsg" class="text-center text-muted px-3">Enter patient vitals to generate a time-aware prediction.</p>
+                            
+                            <div id="recommendationBox" class="mt-2 w-100"></div>
+                        </div>
+
+                        <!-- SHAP Explanation Card -->
+                        <div class="card border-0 shadow-sm p-4 flex-grow-1">
+                            <h6 class="section-title mb-3">AI Explainability (Top Impact Factors)</h6>
+                            <div style="position: relative; height: 300px; width: 100%">
+                                <canvas id="shapChart"></canvas>
+                            </div>
+                            <div class="small text-muted mt-2 text-center fst-italic">
+                                Positive (Red) = Increases Risk | Negative (Blue) = Lowers Risk
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Patient Journey Modal -->
+<div class="modal fade" id="journeyModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title fw-bold text-secondary">Patient Clinical Journey (24h)</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small mb-4">Analyzing the narrative arc: Vitals deterioration leading to Lab Orders and AI Risk Detection.</p>
+                
+                <!-- 1. Risk Score (The Alarm) -->
+                <div class="mb-1" style="height: 150px; width: 100%;">
+                    <canvas id="journeyRiskChart"></canvas>
+                </div>
+                
+                <!-- 2. Vitals (The Symptoms) -->
+                <div class="mb-1" style="height: 150px; width: 100%;">
+                    <canvas id="journeyVitalsChart"></canvas>
+                </div>
+                
+                <!-- 3. Lab Orders (The Investigation) -->
+                <div style="height: 100px; width: 100%;">
+                    <canvas id="journeyLabsChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let shapChartInstance = null;
+let simInterval = null;
+let simData = [];
+let simIndex = 0;
+let currentPatientState = {};
+
+// Journey Charts
+let jRiskChart = null;
+let jVitalsChart = null;
+let jLabsChart = null;
+
+async function showPatientJourney() {
+    if (simData.length === 0) {
+        alert("Please start the simulation first to generate data.");
+        return;
+    }
+
+    // 1. Use cached simData, but sliced to current time
+    // If simIndex is 0, show at least 1 hour (index 0)
+    const maxIdx = Math.max(0, simIndex - 1); 
+    const currentHistory = simData.slice(0, maxIdx + 1);
+    
+    try {
+        // 2. Process: Forward Fill & Prepare Batch
+        let processedData = [];
+        let state = {
+            Age: 60, Gender: 0, HR: null, SBP: null, Temp: null, O2Sat: null,
+            Lactate: null, WBC: null, Creatinine: null, Glucose: null
+        };
+        
+        let hrTrend = [], sbpTrend = [];
+        let labEvents = []; 
+        
+        currentHistory.forEach((row, i) => {
+            // Update State
+            for (const [k, v] of Object.entries(row)) {
+                if (v !== null) state[k] = v;
+            }
+            
+            hrTrend.push(state.HR);
+            sbpTrend.push(state.SBP);
+            
+            if (row.Lactate) labEvents.push({x: i, y: 1, v: row.Lactate, l: 'Lactate'});
+            if (row.WBC) labEvents.push({x: i, y: 2, v: row.WBC, l: 'WBC'});
+            if (row.Creatinine) labEvents.push({x: i, y: 3, v: row.Creatinine, l: 'Creatinine'});
+
+            processedData.push({
+                age: state.Age,
+                gender: state.Gender === 1 ? 'M' : 'F',
+                hr: state.HR, sbp: state.SBP, o2: state.O2Sat, temp: state.Temp,
+                lactate: state.Lactate, wbc: state.WBC, creat: state.Creatinine, glucose: state.Glucose
+            });
+        });
+
+        // 3. Get Risk Trends
+        const predRes = await fetch('/batch_predict', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(processedData)
+        });
+        const predJson = await predRes.json();
+        const riskTrend = predJson.risk_trend;
+
+        // 4. Render Charts
+        const hours = Array.from({length: currentHistory.length}, (_, i) => i);
+        renderJourneyCharts(hours, riskTrend, hrTrend, sbpTrend, labEvents);
+        
+        // Show Modal
+        new bootstrap.Modal(document.getElementById('journeyModal')).show();
+        
+    } catch (e) {
+        console.error(e);
+        alert("Could not generate journey.");
+    }
+}
+
+function renderJourneyCharts(labels, riskData, hrData, sbpData, labEvents) {
+    const maxHour = labels.length > 0 ? labels.length - 1 : 0;
+    
+    // Common Config
+    const commonOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { x: { display: false, min: 0, max: maxHour }, y: { display: true } }
+    };
+
+    // 1. Risk Chart
+    if (jRiskChart) jRiskChart.destroy();
+    jRiskChart = new Chart(document.getElementById('journeyRiskChart'), {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Sepsis Risk %',
+                data: riskData,
+                borderColor: '#dc3545',
+                backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                fill: true,
+                tension: 0.4
+            }]
+        },
+        options: {
+            ...commonOptions,
+            plugins: { title: { display: true, text: 'AI Risk Assessment (%)', align: 'start' } },
+            scales: { y: { min: 0, max: 100, ticks: { stepSize: 50 } }, x: { display: false, min: 0, max: maxHour } }
+        }
+    });
+
+    // 2. Vitals Chart
+    if (jVitalsChart) jVitalsChart.destroy();
+    jVitalsChart = new Chart(document.getElementById('journeyVitalsChart'), {
+        type: 'line',
+        data: {
+            labels: labels,
+            datasets: [
+                { label: 'Heart Rate', data: hrData, borderColor: '#0dcaf0', tension: 0.4 },
+                { label: 'Sys BP', data: sbpData, borderColor: '#ffc107', tension: 0.4 }
+            ]
+        },
+        options: {
+            ...commonOptions,
+            plugins: { title: { display: true, text: 'Vital Signs (HR & BP)', align: 'start' } }
+        }
+    });
+
+    // 3. Labs Chart (Scatter)
+    if (jLabsChart) jLabsChart.destroy();
+    jLabsChart = new Chart(document.getElementById('journeyLabsChart'), {
+        type: 'scatter',
+        data: {
+            datasets: [{
+                label: 'Lab Ordered',
+                data: labEvents,
+                backgroundColor: '#198754',
+                pointRadius: 6
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { 
+                title: { display: true, text: 'Clinical Interventions (Lab Orders)', align: 'start' },
+                legend: { display: false },
+                tooltip: { callbacks: { label: (ctx) => `${ctx.raw.l}: ${ctx.raw.v}` } }
+            },
+            scales: {
+                x: { min: 0, max: maxHour, ticks: { stepSize: 1 }, title: { display: true, text: 'Hours since Admission' } },
+                y: { display: false, min: 0, max: 4 }
+            }
+        }
+    });
+} // Stores the latest known values (Forward Fill)
+
+function switchMode(mode) {
+    stopSimulation();
+    if (mode === 'manual') {
+        document.getElementById('manualView').style.display = 'block';
+        document.getElementById('demoView').style.display = 'none';
+        document.getElementById('modeTabs').children[0].children[0].classList.add('active');
+        document.getElementById('modeTabs').children[1].children[0].classList.remove('active');
+    } else {
+        document.getElementById('manualView').style.display = 'none';
+        document.getElementById('demoView').style.display = 'block';
+        document.getElementById('modeTabs').children[0].children[0].classList.remove('active');
+        document.getElementById('modeTabs').children[1].children[0].classList.add('active');
+    }
+}
+
+async function startSimulation() {
+    const patientId = document.getElementById('patientSelect').value;
+    const btn = document.querySelector('button[onclick="startSimulation()"]');
+    
+    // Only fetch if starting fresh or if simData is empty
+    if (simData.length === 0 || simIndex === 0) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Loading...';
+        
+        try {
+            const res = await fetch(`/api/patient_data/${patientId}`);
+            if (!res.ok) throw new Error("Failed to load patient data");
+            simData = await res.json();
+            
+            simIndex = 0;
+            // Initialize State with defaults or nulls
+            currentPatientState = {
+                Age: 60, Gender: 0,
+                HR: null, SBP: null, O2Sat: null, Resp: null, Temp: null,
+                Lactate: null, WBC: null, Creatinine: null, Glucose: null,
+                TroponinI: null, Lipase: null, Bilirubin_total: null, 
+                Platelets: null, HCO3: null, BUN: null
+            };
+            
+            document.getElementById('labFeed').innerHTML = '<div class="text-success fst-italic">Simulation Started...</div>';
+            
+        } catch (e) {
+            alert(e.message);
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-play-fill"></i> Start';
+            return;
+        }
+    }
+    
+    // Resume/Start Loop
+    btn.disabled = true; // Disable start while running
+    if (simInterval) clearInterval(simInterval);
+    simInterval = setInterval(runSimulationStep, 2000);
+    btn.innerHTML = '<i class="bi bi-play-fill"></i> Running...';
+}
+
+function pauseSimulation() {
+    if (simInterval) {
+        clearInterval(simInterval);
+        simInterval = null;
+        const btn = document.querySelector('button[onclick="startSimulation()"]');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-fill"></i> Resume';
+        document.getElementById('labFeed').innerHTML = '<div class="text-warning fst-italic border-bottom border-secondary py-1">Simulation Paused.</div>' + document.getElementById('labFeed').innerHTML;
+    }
+}
+
+function stopSimulation() {
+    if (simInterval) {
+        clearInterval(simInterval);
+        simInterval = null;
+    }
+    simIndex = 0;
+    simData = []; // Clear data to force refetch on next start
+    
+    const btn = document.querySelector('button[onclick="startSimulation()"]');
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-play-fill"></i> Start';
+    
+    document.getElementById('simHour').innerText = "00:00";
+    updateMonitorValue('simHR', "--", 0);
+    updateMonitorValue('simSBP', "--", 0);
+    updateMonitorValue('simO2', "--", 0);
+    updateMonitorValue('simTemp', "--", 1);
+    document.getElementById('labFeed').innerHTML = '<div class="text-muted fst-italic">Waiting for new results...</div>';
+    resetForm(); // Clear charts/risk
+}
+
+async function runSimulationStep() {
+    if (simIndex >= simData.length) {
+        stopSimulation();
+        document.getElementById('labFeed').innerHTML += '<div class="text-info fst-italic border-top pt-1 mt-1">Simulation Complete.</div>';
+        return;
+    }
+
+    const newData = simData[simIndex];
+    const hourLabel = (simIndex < 10 ? '0' : '') + simIndex + ":00";
+    
+    // --- 1. FORWARD FILL LOGIC ---
+    // Update current state only if new data is present (not null)
+    // This mimics a "Chart" that remembers previous values
+    for (const [key, val] of Object.entries(newData)) {
+        if (val !== null && val !== undefined) {
+            currentPatientState[key] = val;
+        }
+    }
+    
+    // --- 2. Update Vitals Display (Use latest known state) ---
+    document.getElementById('simHour').innerText = hourLabel;
+    updateMonitorValue('simHR', currentPatientState.HR, 0);
+    updateMonitorValue('simSBP', currentPatientState.SBP, 0);
+    updateMonitorValue('simO2', currentPatientState.O2Sat, 0);
+    updateMonitorValue('simTemp', currentPatientState.Temp, 1);
+
+    // --- 3. Check for NEW Labs (Feed only shows new updates) ---
+    const labs = ['Lactate', 'WBC', 'Creatinine', 'Glucose', 'TroponinI', 'Lipase', 'Bilirubin_total', 'Platelets', 'HCO3', 'BUN'];
+    
+    labs.forEach(lab => {
+        // Check if this specific hour had a new lab result (from raw newData)
+        if (newData[lab] !== null && newData[lab] !== undefined) {
+            const val = parseFloat(newData[lab]).toFixed(1);
+            const feed = document.getElementById('labFeed');
+            const entry = document.createElement('div');
+            entry.className = "border-bottom border-secondary py-1";
+            entry.innerHTML = `<span class="text-warning">[${hourLabel}]</span> <strong>${lab}:</strong> ${val}`;
+            feed.prepend(entry);
+        }
+    });
+
+    // --- 4. Prepare Payload (Using Forward-Filled State) ---
+    let payload = {
+        age: currentPatientState.Age || 60,
+        gender: currentPatientState.Gender === 1 ? 'M' : 'F',
+        hr: currentPatientState.HR,
+        sbp: currentPatientState.SBP,
+        o2: currentPatientState.O2Sat,
+        rr: currentPatientState.Resp,
+        temp: currentPatientState.Temp,
+        lactate: currentPatientState.Lactate,
+        wbc: currentPatientState.WBC,
+        creat: currentPatientState.Creatinine,
+        glucose: currentPatientState.Glucose,
+        trop: currentPatientState.TroponinI,
+        lipase: currentPatientState.Lipase,
+        bili: currentPatientState.Bilirubin_total,
+        plt: currentPatientState.Platelets,
+        bicarb: currentPatientState.HCO3,
+        bun: currentPatientState.BUN
+    };
+
+    // Send Prediction
+    await sendPredictionRequest(payload);
+
+    simIndex++;
+}
+
+function updateMonitorValue(id, val, decimals) {
+    const el = document.getElementById(id);
+    if (val !== null && val !== undefined) {
+        el.innerText = parseFloat(val).toFixed(decimals);
+    }
+    // Keep old value if null (standard monitor behavior)
+}
+
+// --- Unified Prediction Logic ---
+
+async function predict() {
+    const data = collectManualData();
+    await sendPredictionRequest(data);
+}
+
+function collectManualData() {
+    const ids = ['age','gender','hr','sbp','o2','rr','temp','lactate','wbc','creat','glucose','trop','lipase','bili','plt','bicarb','bun'];
+    let data = {};
+    
+    console.group("Manual Input");
+    ids.forEach(id => {
+        let el = document.getElementById(id);
+        if (el) {
+            let rawVal = el.value;
+            let val = rawVal.trim();
+            console.log(`${id}: ${val}`);
+            
+            if (id === 'gender') {
+                data[id] = val;
+            } else {
+                data[id] = val === "" ? null : parseFloat(val);
+            }
+        }
+    });
+    console.groupEnd();
+    return data;
+}
+
+async function sendPredictionRequest(data) {
+    // UX: Show loading (only if manual, to avoid flickering in demo)
+    const isManual = document.getElementById('manualView').style.display !== 'none';
+    const scoreDisplay = document.getElementById('riskScore');
+    
+    if (isManual) scoreDisplay.innerText = "...";
+    
+    try {
+        const response = await fetch('/predict', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        
+        const res = await response.json();
+        
+        if (!response.ok) {
+            throw new Error(res.error || 'Unknown error occurred');
+        }
+
+        // Update UI
+        scoreDisplay.innerText = res.probability + "%";
+        
+        let badgeClass = `badge bg-${res.color} badge-status`;
+        if (res.color === 'secondary') {
+            scoreDisplay.style.color = "#6c757d"; 
+        } else {
+            scoreDisplay.style.color = res.color === 'danger' ? '#dc3545' : (res.color === 'warning' ? '#ffc107' : '#198754');
+        }
+        
+        document.getElementById('riskStatus').className = badgeClass;
+        document.getElementById('riskStatus').innerText = res.status;
+        document.getElementById('riskMsg').innerText = res.message;
+        
+        // Recommendations
+        const recBox = document.getElementById('recommendationBox');
+        recBox.innerHTML = "";
+        if (res.recommendations && res.recommendations.length > 0) {
+            recBox.innerHTML = `
+                <div class="alert alert-warning small mb-0 text-start" role="alert">
+                    <strong><i class="bi bi-exclamation-triangle"></i> Improve Accuracy:</strong><br>
+                    Please measure: <b>${res.recommendations.join(', ')}</b>
+                </div>
+            `;
+        }
+
+        // SHAP Chart
+        if (res.shap_data) {
+            renderChart(res.shap_data);
+        }
+        
+    } catch (err) {
+        console.error(err);
+        if (isManual) {
+            scoreDisplay.innerText = "Error";
+            document.getElementById('riskMsg').innerText = err.message;
+        }
+    }
+}
+
+function renderChart(shapData) {
+    const ctx = document.getElementById('shapChart').getContext('2d');
+    
+    const topFeatures = shapData.slice(0, 8);
+    const labels = topFeatures.map(item => item.feature);
+    const values = topFeatures.map(item => item.score);
+    const colors = values.map(val => val > 0 ? 'rgba(220, 53, 69, 0.7)' : 'rgba(25, 135, 84, 0.7)');
+    const borderColors = values.map(val => val > 0 ? 'rgba(220, 53, 69, 1)' : 'rgba(25, 135, 84, 1)');
+
+    if (shapChartInstance) {
+        shapChartInstance.destroy();
+    }
+
+    shapChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Risk Impact',
+                data: values,
+                backgroundColor: colors,
+                borderColor: borderColors,
+                borderWidth: 1
+            }]
+        },
+        options: {
+            indexAxis: 'y',
+            animation: { duration: 1000 },
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    display: true,
+                    grid: { display: false },
+                    ticks: { display: false }
+                },
+                y: {
+                    display: true,
+                    grid: { display: false },
+                    ticks: {
+                        color: '#495057',
+                        font: { size: 11, weight: '600', family: "'Segoe UI', sans-serif" }
+                    }
+                }
+            },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            return ' Impact: ' + context.raw.toFixed(2);
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+function resetForm() {
+    document.getElementById("sepsisForm").reset();
+    document.getElementById('riskScore').innerText = "--%";
+    document.getElementById('riskStatus').innerText = "Waiting for data...";
+    if (shapChartInstance) {
+        shapChartInstance.destroy();
+        shapChartInstance = null;
+    }
+}
+</script>
+</body>
+</html>

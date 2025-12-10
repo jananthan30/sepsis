@@ -1,0 +1,3 @@
+DYNAMIC FEATURES: Use smart_scaler.pkl
+AGE: (Age - 60) / 20
+GENDER: 0=Female, 1=Male (No scaling needed)

@@ -1,0 +1,12 @@
+heart_rate
+sbp
+dbp
+resp_rate
+spo2
+temperature
+shock_index
+pulse_pressure
+map
+sirs_score
+Age
+Gender
