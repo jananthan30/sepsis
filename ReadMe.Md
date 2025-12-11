@@ -1,51 +1,72 @@
-# 🏥 Sepsis Guardian: Time-Aware Deep Learning for ICU
-
-**Author:** [Your Name]  
-**Status:** Research Prototype (v3.0)  
-**Architecture:** Context-Aware LSTM with Informative Missingness
-
+---
+title: Sepsis Early Prediction Model
+colorFrom: blue
+colorTo: red
+sdk: streamlit
+sdk_version: 1.28.0
+app_file: streamlit_app.py
+pinned: false
+license: apache-2.0
 ---
 
-## 📋 Executive Summary
+# Sepsis Early Prediction Model
 
-Sepsis is a life-threatening organ dysfunction caused by a dysregulated host response to infection. Traditional scoring systems (SOFA, qSOFA) are often reactive, detecting sepsis only after organ damage has begun.
+A deep learning model for early prediction of sepsis in ICU patients using MIMIC-IV clinical data.
 
-**Sepsis Guardian** is a Deep Learning system designed to predict sepsis onset **4 hours in advance**. It utilizes a **Time-Aware LSTM architecture** that explicitly models "clinical missingness" (the frequency of lab tests) as a feature, allowing it to adapt to different hospital protocols without retraining.
+## Model Overview
 
-## 🚀 Key Performance Indicators (KPIs)
+- **Architecture**: Bidirectional LSTM neural network
+- **Input**: 24 hours of clinical data (15 features + 15 freshness masks)
+- **Output**: Probability of sepsis onset
+- **Performance**: AUC 0.91 on internal validation
 
-| Metric                       | Sepsis Guardian (Time-Aware) | Standard Clinical Tool (SOFA) |
-| :--------------------------- | :--------------------------- | :---------------------------- |
-| **Internal AUC (MIMIC-IV)**  | **0.853**                    | ~0.74                         |
-| **External AUC (PhysioNet)** | **0.802**                    | ~0.70                         |
-| **Screening Sensitivity**    | **95.0%** (at Risk > 0.25)   | Varies                        |
-| **Diagnostic Specificity**   | **96.5%** (at Risk > 0.40)   | ~90%                          |
+## Features Used
 
-## 🧠 Model Architecture
+**Vital Signs (6)**: Heart Rate, Systolic BP, Diastolic BP, Respiratory Rate, SpO2, Temperature
 
-The model solves the "Domain Shift" problem common in medical AI using a **32-Feature Input Fusion** strategy:
+**Laboratory Values (9)**: WBC, Creatinine, Platelets, Bilirubin, Glucose, BUN, Sodium, Potassium, Hemoglobin
 
-1.  **Dynamic Values (15):** Vitals (HR, BP) + Labs (Lactate, Troponin, Glucose).
-2.  **Presence Masks (15):** Boolean flags indicating if a test was ordered at time $t$. This prevents the model from hallucinating health when data is missing.
-3.  **Static Context (2):** Age and Gender fused at every time step.
+**Freshness Masks (15)**: Binary indicators showing if each measurement is recent (within 6 hours)
 
-## 🛠 Tech Stack
+## Data Source
 
-- **Training:** PyTorch, Google BigQuery, MIMIC-IV Pipeline.
-- **Deployment:** Flask (Python), Bootstrap 5 (Frontend).
-- **Validation:** Tested on 40,000+ patients across 3 distinct hospital systems.
+Trained on MIMIC-IV v3.1 (Medical Information Mart for Intensive Care) database using Sepsis-3 clinical criteria:
+- Sepsis-3 Definition: Suspected infection + organ dysfunction (SOFA >= 2)
+- Dataset: 15,332 ICU stays (3,833 sepsis, 11,499 control)
+- Validation: 80/20 stratified train/test split
 
-## 🚦 Clinical Protocol
+## Key Innovation: Time-Aware Preprocessing
 
-The dashboard implements a "Traffic Light" protocol based on calibrated probability thresholds:
+Traditional forward-fill carries stale values indefinitely. Our approach uses a 6-hour freshness window:
+- If measurement is less than 6 hours old: use value, mark as fresh (mask=1)
+- If measurement is 6+ hours old: use value, mark as stale (mask=0)
+- Model learns to weight recent measurements more heavily
 
-- **🟢 GREEN (<25%):** High Safety. Patient is stable.
-- **🟡 YELLOW (25-30%):** Screening Alert. Nurse check required.
-- **🔴 RED (>30%):** Code Sepsis. Immediate diagnostic workup.
+## Disclaimer
 
-## 💻 How to Run
+This model is for research and educational purposes only. It has been internally validated on MIMIC-IV data. External validation on independent datasets is required before any clinical deployment.
 
-1. Install dependencies: `pip install -r requirements.txt`
-2. Place the model file `sepsis_model_time_aware.pth` in the root directory.
-3. Run the server: `python app.py`
-4. Open browser at `http://localhost:5000`
+## Dashboard Features
+
+1. **Model Performance**: ROC curves, PR curves, confusion matrix, and metrics
+2. **Feature Analysis**: Correlation matrix and feature importance visualizations
+3. **Patient Explainer**: Individual patient predictions with SHAP explanations
+4. **Data Pipeline**: Training process and data distribution visualizations
+
+## Technical Stack
+
+- TensorFlow/Keras for deep learning
+- Streamlit for the web interface
+- Plotly for interactive visualizations
+- SHAP for model explainability
+
+## How to Run Locally
+
+```bash
+pip install -r requirements.txt
+streamlit run streamlit_app.py
+```
+
+## License
+
+Apache License 2.0 - See LICENSE file for details.
