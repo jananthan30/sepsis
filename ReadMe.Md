@@ -1,9 +1,9 @@
 ---
 title: Sepsis Early Prediction Model
+emoji: 🏥
 colorFrom: blue
 colorTo: red
-sdk: streamlit
-sdk_version: 1.28.0
+sdk: docker
 app_file: streamlit_app.py
 pinned: false
 license: apache-2.0
