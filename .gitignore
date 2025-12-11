@@ -1,1 +1,1 @@
-*.npy
+# Keep .npy files for validation data
