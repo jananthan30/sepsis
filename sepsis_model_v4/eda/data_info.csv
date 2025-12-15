@@ -1,0 +1,17 @@
+Column,Dtype,Description
+stay_id,Int64,ICU stay identifier
+charttime,datetime64[us],Time of measurement
+itemid,Int64,MIMIC item ID for the measurement type
+valuenum,float64,Numeric value of the measurement
+feature,object,"Feature name (heart_rate, sbp, temperature, etc.)"
+hadm_id,Int64,Hospital admission ID
+subject_id,Int64,Patient subject ID
+intime,datetime64[ns],ICU admission time
+outtime,datetime64[ns],ICU discharge time
+Age,Float64,Patient age at admission
+Gender,Int64,"Patient gender (0=Female, 1=Male)"
+onset_time,datetime64[ns],Sepsis onset time (NaT for controls)
+label,int64,"Label (0=Control, 1=Sepsis)"
+win_end,datetime64[ns],End of prediction window
+hours_before_win_end,float64,Hours before window end
+hour_bin,int32,Hourly bin (0-23)

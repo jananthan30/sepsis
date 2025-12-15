@@ -44,7 +44,7 @@ from sklearn.metrics import roc_auc_score, confusion_matrix, classification_repo
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import (
-    LSTM, Bidirectional, Dense, Dropout, Masking, BatchNormalization
+    LSTM, Bidirectional, Dense, Dropout, BatchNormalization
 )
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
@@ -421,7 +421,6 @@ def build_model(input_shape=(24, 32), lstm_units=(64, 32), dropout=0.3):
     Build Bidirectional LSTM model for sepsis prediction.
 
     Architecture:
-    - Masking layer (ignores 0-padded timesteps)
     - Bidirectional LSTM (64 units) with dropout
     - BatchNormalization
     - Bidirectional LSTM (32 units) with dropout
@@ -429,6 +428,10 @@ def build_model(input_shape=(24, 32), lstm_units=(64, 32), dropout=0.3):
     - Dense (32 units, ReLU)
     - Dropout
     - Dense (1 unit, Sigmoid) - binary classification
+
+    Note: Freshness masks (features 15-29) encode whether each clinical measurement
+    is fresh (1) or stale/missing (0); timesteps are not masked because static
+    features keep every timestep non-zero.
 
     Args:
         input_shape: (timesteps, features)
@@ -439,11 +442,8 @@ def build_model(input_shape=(24, 32), lstm_units=(64, 32), dropout=0.3):
         Compiled Keras model
     """
     model = Sequential([
-        # Masking layer - ignores timesteps where all features are 0
-        Masking(mask_value=0.0, input_shape=input_shape),
-
         # First LSTM layer
-        Bidirectional(LSTM(lstm_units[0], return_sequences=True, dropout=dropout)),
+        Bidirectional(LSTM(lstm_units[0], return_sequences=True, dropout=dropout), input_shape=input_shape),
         BatchNormalization(),
 
         # Second LSTM layer
@@ -520,8 +520,18 @@ def train_model_from_tensors(X, y, subjects, output_dir=OUTPUT_DIR):
 
     # 1. Split data (subject-aware to prevent data leakage)
     print("\n[1/5] Splitting data (subject-aware)...")
-    splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-    train_idx, test_idx = next(splitter.split(X, y, groups=subjects))
+    splitter = GroupShuffleSplit(n_splits=20, test_size=0.2, random_state=42)
+    train_idx = test_idx = None
+
+    for train_i, test_i in splitter.split(X, y, groups=subjects):
+        if len(np.unique(y[test_i])) >= 2 and len(np.unique(y[train_i])) >= 2:
+            train_idx, test_idx = train_i, test_i
+            break
+
+    if train_idx is None:
+        print("   Warning: Could not find a split with both classes in train/test; using first split (metrics may be unstable).")
+        fallback_splitter = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+        train_idx, test_idx = next(fallback_splitter.split(X, y, groups=subjects))
 
     X_train, X_test = X[train_idx], X[test_idx]
     y_train, y_test = y[train_idx], y[test_idx]
@@ -550,16 +560,17 @@ def train_model_from_tensors(X, y, subjects, output_dir=OUTPUT_DIR):
 
     callbacks = [
         EarlyStopping(
-            monitor='val_auc',
+            monitor='val_AUC',
             patience=EARLY_STOP_PATIENCE,
             mode='max',
             restore_best_weights=True,
             verbose=1
         ),
         ReduceLROnPlateau(
-            monitor='val_auc',
+            monitor='val_AUC',
             factor=0.5,
             patience=LR_REDUCE_PATIENCE,
+            mode='max',
             verbose=1
         )
     ]
@@ -580,23 +591,41 @@ def train_model_from_tensors(X, y, subjects, output_dir=OUTPUT_DIR):
     print("=" * 70)
 
     y_pred = model.predict(X_test, verbose=0).flatten()
-    auc = roc_auc_score(y_test, y_pred)
+
+    # Guard AUC computation when test set has only one class
+    n_classes = len(np.unique(y_test))
+    if n_classes < 2:
+        print(f"   Warning: Test set has only {n_classes} class(es), AUC undefined")
+        auc = 0.5  # Default to random chance
+    else:
+        auc = roc_auc_score(y_test, y_pred)
 
     # Binary predictions at optimal threshold
     from sklearn.metrics import precision_recall_curve
-    precision, recall, thresholds = precision_recall_curve(y_test, y_pred)
-    f1_scores = 2 * (precision * recall) / (precision + recall + 1e-7)
-    optimal_idx = np.argmax(f1_scores)
-    optimal_threshold = thresholds[optimal_idx] if optimal_idx < len(thresholds) else 0.5
+
+    # Guard precision_recall_curve when only one class
+    if n_classes < 2:
+        optimal_threshold = 0.5
+    else:
+        precision, recall, thresholds = precision_recall_curve(y_test, y_pred)
+        f1_scores = 2 * (precision * recall) / (precision + recall + 1e-7)
+        optimal_idx = np.argmax(f1_scores)
+        optimal_threshold = thresholds[optimal_idx] if optimal_idx < len(thresholds) else 0.5
 
     y_pred_binary = (y_pred >= optimal_threshold).astype(int)
 
     print(f"\nTest AUC: {auc:.4f}")
     print(f"Optimal Threshold: {optimal_threshold:.3f}")
     print(f"\nConfusion Matrix:")
-    print(confusion_matrix(y_test, y_pred_binary))
+    print(confusion_matrix(y_test, y_pred_binary, labels=[0, 1]))
     print(f"\nClassification Report:")
-    print(classification_report(y_test, y_pred_binary, target_names=['Control', 'Sepsis']))
+    print(classification_report(
+        y_test,
+        y_pred_binary,
+        labels=[0, 1],
+        target_names=['Control', 'Sepsis'],
+        zero_division=0
+    ))
 
     # Calculate accuracy
     accuracy = np.mean(y_pred_binary == y_test)
@@ -641,7 +670,7 @@ def train_model_from_tensors(X, y, subjects, output_dir=OUTPUT_DIR):
 # DATA EXTRACTION (requires BigQuery access)
 # ============================================================================
 
-def extract_mimic_data(project_id="sepsis-prediction-2025", chunk_size=5000):
+def extract_mimic_data(project_id="sepsis-prediction-2025", chunk_size=2000):
     """
     Extract data from MIMIC-IV BigQuery.
 
@@ -670,7 +699,7 @@ def extract_mimic_data(project_id="sepsis-prediction-2025", chunk_size=5000):
 
     # Get ICU stays >= 24 hours
     stays_query = """
-    SELECT s.stay_id, s.subject_id, s.intime, s.outtime,
+    SELECT s.stay_id, s.hadm_id, s.subject_id, s.intime, s.outtime,
            p.anchor_age as Age,
            CASE WHEN p.gender='F' THEN 0 ELSE 1 END as Gender
     FROM `physionet-data.mimiciv_3_1_icu.icustays` s
@@ -713,6 +742,7 @@ def extract_mimic_data(project_id="sepsis-prediction-2025", chunk_size=5000):
             used.add(match['stay_id'])
             controls.append({
                 'stay_id': match['stay_id'],
+                'hadm_id': match['hadm_id'],
                 'subject_id': match['subject_id'],
                 'intime': match['intime'],
                 'Age': match['Age'],
@@ -722,7 +752,7 @@ def extract_mimic_data(project_id="sepsis-prediction-2025", chunk_size=5000):
             })
 
     cohort = pd.concat([
-        sepsis_df[['stay_id', 'subject_id', 'onset_time', 'Age', 'Gender', 'label']],
+        sepsis_df[['stay_id', 'hadm_id', 'subject_id', 'onset_time', 'Age', 'Gender', 'label']],
         pd.DataFrame(controls)
     ])
 
@@ -733,9 +763,12 @@ def extract_mimic_data(project_id="sepsis-prediction-2025", chunk_size=5000):
 
     stay_ids = cohort['stay_id'].unique().tolist()
     dfs = []
+    num_chunks = (len(stay_ids) + chunk_size - 1) // chunk_size
 
     for i in tqdm(range(0, len(stay_ids), chunk_size), desc="Extracting"):
-        chunk = ",".join(map(str, stay_ids[i:i+chunk_size]))
+        chunk_ids = stay_ids[i:i+chunk_size]
+        chunk = ",".join(map(str, chunk_ids))
+        print(f"   Chunk {i//chunk_size + 1}/{num_chunks}: {len(chunk_ids)} stays")
         itemids = ",".join(map(str, FEATURE_MAP.keys()))
 
         # Chart events (vitals)
@@ -749,13 +782,15 @@ def extract_mimic_data(project_id="sepsis-prediction-2025", chunk_size=5000):
         except Exception as e:
             print(f"   Chart events error: {e}")
 
-        # Lab events
+        # Lab events - filter by hadm_id and ICU window to avoid cross-stay leakage
         try:
             df_labs = client.query(f"""
                 SELECT i.stay_id, l.charttime, l.itemid, l.valuenum
                 FROM `physionet-data.mimiciv_3_1_hosp.labevents` l
                 JOIN `physionet-data.mimiciv_3_1_icu.icustays` i
-                    ON l.subject_id = i.subject_id
+                    ON l.hadm_id = i.hadm_id
+                    AND l.charttime >= i.intime
+                    AND l.charttime <= i.outtime
                 WHERE i.stay_id IN ({chunk}) AND l.itemid IN ({itemids})
             """).to_dataframe()
             dfs.append(df_labs)
@@ -836,6 +871,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Sepsis Prediction Model V3")
     parser.add_argument("--extract", action="store_true", help="Extract data from BigQuery")
     parser.add_argument("--project", type=str, default="sepsis-prediction-2025", help="GCP project ID")
+    parser.add_argument("--chunk-size", type=int, default=2000, help="Rows per stay chunk when pulling from BigQuery")
     parser.add_argument("--load", type=str, help="Load pre-built tensors from .npz file")
     parser.add_argument("--output", type=str, default="sepsis_model_v3", help="Output directory")
 
@@ -843,12 +879,16 @@ if __name__ == "__main__":
 
     if args.extract:
         # Extract from BigQuery and train
-        df_raw, cohort = extract_mimic_data(project_id=args.project)
+        df_raw, cohort = extract_mimic_data(project_id=args.project, chunk_size=args.chunk_size)
         X, y, subjects = build_tensors_from_raw(df_raw, cohort)
 
+        # Ensure output directory exists before saving
+        output_path = Path(args.output)
+        output_path.mkdir(parents=True, exist_ok=True)
+
         # Save intermediate tensors
-        np.savez(f"{args.output}/tensors.npz", X=X, y=y, subjects=subjects)
-        print(f"Tensors saved to {args.output}/tensors.npz")
+        np.savez(output_path / "tensors.npz", X=X, y=y, subjects=subjects)
+        print(f"Tensors saved to {output_path / 'tensors.npz'}")
 
         # Train
         model, scaler, history, metrics = train_model_from_tensors(X, y, subjects, args.output)
