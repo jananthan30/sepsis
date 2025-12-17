@@ -1,3 +1,0 @@
-itemid,count,min_val,max_val,mean_val,median_val,in_celsius_range,in_fahrenheit_range,below_35,above_105,mimic_label,actual_unit,pct_in_celsius,pct_in_fahrenheit
-223761,2054880,0.1,234123.0,98.693653798762,98.4,593,2049801,186,203,Celsius,FAHRENHEIT,0.028858132835007398,99.75283228217707
-223762,394796,0.3,3467.0,37.070269997163095,37.0,382435,812,11526,8,Fahrenheit,CELSIUS,96.8690158968176,0.20567584271370531
