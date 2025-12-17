@@ -1074,13 +1074,13 @@ def render_feature_analysis(models, scalers):
     use_real_data = False
 
     if X_val is not None:
-        # 15-feature model: tensor has shape (N, 24, 32) with 15 values + 15 masks + Age + Gender
-        n_features = 15
+        # V6 model: tensor has shape (N, 24, 40) with 19 values + 19 masks + Age + Gender
+        n_features = len(features)  # 19 for V6
         feature_means = X_val[:, :, :n_features].mean(axis=1)
         df = pd.DataFrame(feature_means, columns=features)
-        # Add Age and Gender from the validation tensor (indices 30 and 31)
-        df["Age"] = X_val[:, 0, 30]  # Age is static across timesteps
-        df["Gender"] = X_val[:, 0, 31]  # Gender is static across timesteps
+        # Add Age and Gender from the validation tensor (indices 38 and 39 for V6)
+        df["Age"] = X_val[:, 0, 38]  # Age is static across timesteps
+        df["Gender"] = X_val[:, 0, 39]  # Gender is static across timesteps
 
         y_true = y_val.astype(int)
         use_real_data = True
@@ -1976,8 +1976,8 @@ def render_data_pipeline(models, scalers):
     X_val, y_val = load_mimic_validation_data(model_key)
 
     if X_val is not None:
-        # Extract feature values from tensor
-        n_features = 15
+        # Extract feature values from tensor (V6: 19 features)
+        n_features = len(features)  # 19 for V6
         feature_means = X_val[:, :, :n_features].mean(axis=1)
         df = pd.DataFrame(feature_means, columns=features)
         y_true = y_val.astype(int)
