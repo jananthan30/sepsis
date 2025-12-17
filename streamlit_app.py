@@ -107,37 +107,48 @@ st.set_page_config(
 # CONSTANTS
 # ============================================================================
 BASE_DIR = Path(__file__).parent
-MODEL_DIR = BASE_DIR / "sepsis_model_v3"  # V3 model with time-aware forward-fill (AUC 0.91)
+MODEL_DIR = BASE_DIR / "sepsis_model_v6"  # V6 model with 4-hour prediction, 5-fold CV (AUC 0.705)
 
 # Realistic mask patterns from MIMIC-IV data (average freshness rates)
 # Used when creating predictions for the What-If simulator
+# V6 has 19 features: 16 base + 3 delta features
 REALISTIC_MASKS = {
-    'heart_rate': 0.55, 'sbp': 0.54, 'dbp': 0.54, 'resp_rate': 0.55, 'spo2': 0.54,
+    'heart_rate': 0.55, 'sbp': 0.54, 'dbp': 0.54, 'map': 0.54, 'resp_rate': 0.55, 'spo2': 0.54,
     'temperature': 0.50, 'wbc': 0.32, 'creatinine': 0.36, 'platelets': 0.33,
     'bilirubin': 0.10, 'glucose': 0.33, 'bun': 0.36, 'sodium': 0.36,
-    'potassium': 0.36, 'hemoglobin': 0.33
+    'potassium': 0.36, 'hemoglobin': 0.33,
+    # Delta features - typically have lower coverage as they require historical data
+    'delta_hr': 0.40, 'delta_sbp': 0.40, 'delta_temp': 0.35
 }
 
-# Feature definitions for 15-feature Rapid Response model
-FEATURES_15 = [
-    "heart_rate", "sbp", "dbp", "resp_rate", "spo2", "temperature",
+# Feature definitions for V6 19-feature model
+# Base features (16): vitals (7) + labs (9)
+# Delta features (3): rate of change for key vitals
+FEATURES_19 = [
+    "heart_rate", "sbp", "dbp", "map", "resp_rate", "spo2", "temperature",
     "wbc", "creatinine", "platelets", "bilirubin", "glucose",
-    "bun", "sodium", "potassium", "hemoglobin"
+    "bun", "sodium", "potassium", "hemoglobin",
+    "delta_hr", "delta_sbp", "delta_temp"
 ]
 
-# Clinical risk thresholds for 15-feature model
-# Model has good discrimination (predictions 3-92%)
+# Keep FEATURES_15 for backward compatibility
+FEATURES_15 = FEATURES_19  # Alias for V6
+
+# Clinical risk thresholds for V6 model
+# V6 threshold from cross-validation: 0.3853
 RISK_THRESHOLDS = {
-    "15_feature": {"low": 0.35, "high": 0.50},
+    "15_feature": {"low": 0.30, "high": 0.45},
+    "19_feature": {"low": 0.30, "high": 0.45},
 }
-RISK_LOW = 0.35
-RISK_HIGH = 0.50
+RISK_LOW = 0.30
+RISK_HIGH = 0.45
 
 # Feature ranges for sliders
 FEATURE_RANGES = {
     "heart_rate": (40, 180, 80),      # (min, max, default)
     "sbp": (60, 200, 120),
     "dbp": (30, 120, 80),
+    "map": (40, 150, 77),             # Mean Arterial Pressure - critical for septic shock
     "resp_rate": (8, 40, 16),
     "spo2": (70, 100, 98),
     "temperature": (35.0, 42.0, 37.0),
@@ -150,9 +161,13 @@ FEATURE_RANGES = {
     "sodium": (120, 160, 140),
     "potassium": (2.0, 7.0, 4.0),
     "hemoglobin": (5.0, 20.0, 14.0),
+    # Delta features: rate of change per hour (positive = increasing, negative = decreasing)
+    "delta_hr": (-20.0, 20.0, 0.0),      # Heart rate change/hour
+    "delta_sbp": (-20.0, 20.0, 0.0),     # Systolic BP change/hour
+    "delta_temp": (-1.0, 1.0, 0.0),      # Temperature change/hour
+    # Derived features (for display/calculation only)
     "shock_index": (0.3, 2.5, 0.7),
     "pulse_pressure": (10, 100, 40),
-    "map": (50, 150, 93),
     "sirs_score": (0, 4, 1),
     "Age": (18, 100, 65),
     "Gender": (0, 1, 1)
@@ -162,6 +177,7 @@ FEATURE_LABELS = {
     "heart_rate": "Heart Rate (bpm)",
     "sbp": "Systolic BP (mmHg)",
     "dbp": "Diastolic BP (mmHg)",
+    "map": "Mean Arterial Pressure (mmHg)",
     "resp_rate": "Respiratory Rate (/min)",
     "spo2": "SpO2 (%)",
     "temperature": "Temperature (°C)",
@@ -174,9 +190,13 @@ FEATURE_LABELS = {
     "sodium": "Sodium (mEq/L)",
     "potassium": "Potassium (mEq/L)",
     "hemoglobin": "Hemoglobin (g/dL)",
+    # Delta features - rate of change over past 4 hours
+    "delta_hr": "HR Trend (bpm/hour)",
+    "delta_sbp": "SBP Trend (mmHg/hour)",
+    "delta_temp": "Temp Trend (°C/hour)",
+    # Derived features
     "shock_index": "Shock Index (HR/SBP)",
     "pulse_pressure": "Pulse Pressure (mmHg)",
-    "map": "MAP (mmHg)",
     "sirs_score": "SIRS Score",
     "Age": "Age (years)",
     "Gender": "Gender (0=F, 1=M)"
@@ -187,13 +207,15 @@ FEATURE_LABELS = {
 # ============================================================================
 @st.cache_resource
 def load_models():
-    """Load the 15-feature Rapid Response model and scaler."""
+    """Load the V6 19-feature model and scaler."""
     models = {}
     scalers = {}
 
-    # 15-feature Rapid Response model V3 (Vitals + Labs with time-aware forward-fill)
-    model_path = MODEL_DIR / "sepsis_model_v3.keras"
-    scaler_path = MODEL_DIR / "sepsis_scaler_v3.pkl"
+    # V6 model: 19 features (16 base + 3 delta) with 4-hour prediction gap, 5-fold CV
+    # Model input shape: (batch, 24 timesteps, 40 features)
+    # Format: [19 scaled values, 19 masks, Age, Gender]
+    model_path = MODEL_DIR / "sepsis_model_v6.keras"
+    scaler_path = MODEL_DIR / "sepsis_scaler_v6.pkl"
 
     if model_path.exists():
         models["15_feature"] = tf.keras.models.load_model(str(model_path))
@@ -208,7 +230,7 @@ def load_models():
 # ============================================================================
 @st.cache_data
 def generate_synthetic_data(n_samples=1000, seed=42):
-    """Generate synthetic patient data for demonstration."""
+    """Generate synthetic patient data for demonstration (V6 compatible)."""
     np.random.seed(seed)
 
     # Generate features with realistic distributions
@@ -237,6 +259,11 @@ def generate_synthetic_data(n_samples=1000, seed=42):
     data["pulse_pressure"] = data["sbp"] - data["dbp"]
     data["map"] = data["dbp"] + (data["pulse_pressure"] / 3)
 
+    # V6 Delta features (rate of change) - simulate with small random values
+    data["delta_hr"] = np.random.normal(0, 3, n_samples).clip(-20, 20)
+    data["delta_sbp"] = np.random.normal(0, 4, n_samples).clip(-20, 20)
+    data["delta_temp"] = np.random.normal(0, 0.1, n_samples).clip(-1, 1)
+
     # SIRS score (simplified)
     sirs = np.zeros(n_samples)
     sirs += (data["heart_rate"] > 90).astype(int)
@@ -247,7 +274,7 @@ def generate_synthetic_data(n_samples=1000, seed=42):
 
     df = pd.DataFrame(data)
 
-    # Generate synthetic labels based on risk factors
+    # Generate synthetic labels based on risk factors (including delta features)
     risk_score = (
         (df["heart_rate"] - 80) / 40 +
         (100 - df["spo2"]) / 10 +
@@ -255,7 +282,9 @@ def generate_synthetic_data(n_samples=1000, seed=42):
         df["shock_index"] +
         (df["creatinine"] - 1) / 2 +
         (df["wbc"] - 10) / 10 +
-        df["sirs_score"] / 2
+        df["sirs_score"] / 2 +
+        df["delta_hr"] / 10 +  # Rising HR is concerning
+        (-df["delta_sbp"]) / 10  # Falling BP is concerning
     )
     prob = 1 / (1 + np.exp(-risk_score / 3))
     labels = (np.random.random(n_samples) < prob).astype(int)
@@ -307,7 +336,12 @@ def get_validation_predictions(_model, X_val, model_key):
     if X_val is None:
         return None
 
-    # 15-feature model expects (N, 24, 32) - 15 values + 15 masks + 2 static
+    # V6 model expects (N, 24, 40) - 19 values + 19 masks + 2 static
+    if model_key == "15_feature" and X_val.shape[2] == 40:
+        y_pred = _model.predict(X_val, verbose=0).flatten()
+        return y_pred
+
+    # Legacy V3 model expects (N, 24, 32) - 15 values + 15 masks + 2 static
     if model_key == "15_feature" and X_val.shape[2] == 32:
         y_pred = _model.predict(X_val, verbose=0).flatten()
         return y_pred
@@ -323,11 +357,12 @@ def generate_patient_trajectory(patient_data, model_key=None, n_hours=24):
     """
     Generate a simulated 24-hour patient trajectory based on current values.
     Adds realistic clinical variation to simulate temporal changes.
+    Updated for V6 model with MAP and delta features.
     """
     trajectory = {}
 
     # Define variation patterns (some features trend, others fluctuate)
-    for feat in FEATURES_15:
+    for feat in FEATURES_19:  # V6 uses 19 features
         if feat not in patient_data:
             continue
 
@@ -344,6 +379,12 @@ def generate_patient_trajectory(patient_data, model_key=None, n_hours=24):
             variation = np.random.randn(n_hours) * 8
             min_val, max_val = (60, 200) if feat == "sbp" else (30, 120)
             trajectory[feat] = (base_val + variation).clip(min_val, max_val)
+
+        elif feat == "map":
+            # MAP is derived from SBP and DBP - will be recalculated later
+            # For now, use base value with small variation
+            variation = np.random.randn(n_hours) * 5
+            trajectory[feat] = (base_val + variation).clip(40, 150)
 
         elif feat == "resp_rate":
             variation = np.random.randn(n_hours) * 3
@@ -391,10 +432,31 @@ def generate_patient_trajectory(patient_data, model_key=None, n_hours=24):
             # Static features don't change
             trajectory[feat] = np.full(n_hours, base_val)
 
+        elif feat in ["delta_hr", "delta_sbp", "delta_temp"]:
+            # Delta features: rate of change per hour
+            # These fluctuate around the base value with some persistence
+            persistence = 0.7  # Auto-correlation
+            delta_series = np.zeros(n_hours)
+            delta_series[0] = base_val
+            for i in range(1, n_hours):
+                delta_series[i] = persistence * delta_series[i-1] + (1 - persistence) * base_val + np.random.randn() * 2
+            # Clip to reasonable ranges
+            if feat == "delta_hr":
+                trajectory[feat] = delta_series.clip(-20, 20)
+            elif feat == "delta_sbp":
+                trajectory[feat] = delta_series.clip(-20, 20)
+            elif feat == "delta_temp":
+                trajectory[feat] = delta_series.clip(-1, 1)
+
         else:
             # Default: small random variation
-            variation = np.random.randn(n_hours) * (base_val * 0.05)
+            variation = np.random.randn(n_hours) * (abs(base_val) * 0.05 + 0.1)
             trajectory[feat] = base_val + variation
+
+    # Recalculate MAP from SBP and DBP if both available
+    if "sbp" in trajectory and "dbp" in trajectory:
+        pulse_pressure = trajectory["sbp"] - trajectory["dbp"]
+        trajectory["map"] = trajectory["dbp"] + (pulse_pressure / 3)
 
     return trajectory
 
@@ -627,61 +689,70 @@ def calculate_clinical_risk_score(patient_data):
 # ============================================================================
 def preprocess_for_model(data, model_type, scaler):
     """
-    Preprocess input data for 15-feature model prediction.
+    Preprocess input data for V6 19-feature model prediction.
 
     IMPORTANT: Must match training format exactly!
-    Model input shape: (batch, 24 timesteps, 32 features)
-    Format: [15 scaled values (0-14), 15 masks (15-29), Age RAW (30), Gender (31)]
+    Model input shape: (batch, 24 timesteps, 40 features)
+    Format: [19 scaled values (0-18), 19 masks (19-37), Age RAW (38), Gender (39)]
+
+    V6 Features (19):
+    - Base vitals (7): heart_rate, sbp, dbp, map, resp_rate, spo2, temperature
+    - Labs (9): wbc, creatinine, platelets, bilirubin, glucose, bun, sodium, potassium, hemoglobin
+    - Delta features (3): delta_hr, delta_sbp, delta_temp
 
     Training code reference:
-    - vals = 15 feature values (scaled with StandardScaler)
-    - masks = 15 binary masks (1 = data present, 0 = missing)
+    - vals = 19 feature values (scaled with StandardScaler)
+    - masks = 19 binary masks (1 = data present, 0 = missing)
     - static = [Age, Gender] - RAW values, NOT normalized
-
-    NOTE: The new corrected model (sepsis_model_v2) was trained with temperature
-    already converted to Celsius, so NO temperature conversion is needed.
-    User input is in Celsius and the scaler expects Celsius.
     """
-    features = FEATURES_15
+    features = FEATURES_19  # V6 uses 19 features
+    n_features = len(features)  # 19
     n_timesteps = 24
 
     # Extract relevant features
     if isinstance(data, dict):
         X_raw = np.array([[data.get(f, 0) for f in features]])
     else:
-        X_raw = data[features].values.copy()
+        # If dataframe doesn't have delta features, compute them
+        data_copy = data.copy()
+        if "map" not in data_copy.columns:
+            data_copy["map"] = data_copy["dbp"] + (data_copy["sbp"] - data_copy["dbp"]) / 3
+        if "delta_hr" not in data_copy.columns:
+            data_copy["delta_hr"] = 0.0
+        if "delta_sbp" not in data_copy.columns:
+            data_copy["delta_sbp"] = 0.0
+        if "delta_temp" not in data_copy.columns:
+            data_copy["delta_temp"] = 0.0
+        X_raw = data_copy[features].values.copy()
 
     n_samples = X_raw.shape[0]
 
-    # NOTE: Temperature is already in Celsius - no conversion needed for v2 model
-    # The new model was trained with proper F->C conversion during preprocessing
-
-    # Scale the 15 features using the scaler
+    # Scale the 19 features using the scaler
     X_scaled = X_raw.copy()
     if scaler is not None:
         X_scaled = scaler.transform(X_raw)
 
-    # Create array with correct format: [values, masks, age, gender]
-    X_formatted = np.zeros((n_samples, 32))
+    # Create array with correct format: [19 values, 19 masks, age, gender] = 40 features
+    X_formatted = np.zeros((n_samples, 40))
 
-    # First 15 slots: scaled feature values
-    X_formatted[:, :15] = X_scaled
+    # First 19 slots: scaled feature values
+    X_formatted[:, :n_features] = X_scaled
 
-    # Next 15 slots: masks - use realistic mask patterns from training data
-    # V3 model learned with ~55% vitals coverage, ~33% labs coverage
+    # Next 19 slots: masks - use realistic mask patterns from training data
+    # V6 model learned with ~55% vitals coverage, ~33% labs coverage
     for i, feat in enumerate(features):
-        X_formatted[:, 15 + i] = REALISTIC_MASKS.get(feat, 0.5)
+        X_formatted[:, n_features + i] = REALISTIC_MASKS.get(feat, 0.5)
 
     # Age and Gender at the end - RAW values (NOT normalized!)
     # Training code: static = np.tile([g['Age'].iloc[0], g['Gender'].iloc[0]], (24, 1))
     if isinstance(data, dict):
-        X_formatted[:, 30] = data.get("Age", 65)  # RAW age
-        X_formatted[:, 31] = data.get("Gender", 1)
+        X_formatted[:, 38] = data.get("Age", 65)  # RAW age
+        X_formatted[:, 39] = data.get("Gender", 1)
     else:
-        X_formatted[:, 30] = data["Age"].values  # RAW age
-        X_formatted[:, 31] = data["Gender"].values
+        X_formatted[:, 38] = data["Age"].values  # RAW age
+        X_formatted[:, 39] = data["Gender"].values
 
-    # Repeat for 24 timesteps: (samples, 24, 32)
+    # Repeat for 24 timesteps: (samples, 24, 40)
     X = np.tile(X_formatted[:, np.newaxis, :], (1, n_timesteps, 1))
 
     return X.astype(np.float32)
@@ -711,7 +782,10 @@ def render_model_performance(models, scalers):
 
     # Model info
     st.markdown("""
-    **15-Feature Rapid Response Model** - Uses vital signs and laboratory values for comprehensive sepsis risk assessment.
+    **V6 19-Feature Model** - Uses vital signs, laboratory values, and trend features for early sepsis detection with 4-hour prediction gap.
+    - **Features**: 16 base (7 vitals + 9 labs) + 3 delta (rate of change)
+    - **Training**: 5-fold cross-validation on MIMIC-IV data
+    - **CV AUC**: 0.705 ± 0.010
     """)
 
     # Validation disclaimer
@@ -1212,7 +1286,7 @@ def render_patient_explainer(models, scalers):
     features = FEATURES_15
 
     st.markdown("""
-    **15-Feature Rapid Response Model** - Using vital signs and laboratory values for comprehensive sepsis risk assessment.
+    **V6 19-Feature Model** - Using vital signs, laboratory values, and trend features for early sepsis detection with 4-hour prediction gap.
     """)
 
     # Data source selector
@@ -1278,7 +1352,7 @@ def render_patient_explainer(models, scalers):
 
     if data_source == "Manual Entry":
         st.subheader("🎛️ What-If Patient Simulator")
-        st.info("Adjust the sliders to see how changes in patient vitals affect sepsis risk prediction.")
+        st.info("Adjust the sliders to see how changes in patient vitals affect sepsis risk prediction. V6 model includes trend features for early warning detection.")
 
         # Vitals
         st.markdown("**Vital Signs**")
@@ -1286,12 +1360,17 @@ def render_patient_explainer(models, scalers):
         with col1:
             patient_data["heart_rate"] = st.slider("Heart Rate (bpm)", 40, 180, 85)
             patient_data["sbp"] = st.slider("Systolic BP (mmHg)", 60, 200, 120)
-        with col2:
             patient_data["dbp"] = st.slider("Diastolic BP (mmHg)", 30, 120, 80)
+        with col2:
             patient_data["resp_rate"] = st.slider("Respiratory Rate (/min)", 8, 40, 16)
-        with col3:
             patient_data["spo2"] = st.slider("SpO2 (%)", 70, 100, 98)
             patient_data["temperature"] = st.slider("Temperature (°C)", 35.0, 42.0, 37.0, 0.1)
+        with col3:
+            # Auto-calculate MAP from BP values
+            pulse_pressure = patient_data["sbp"] - patient_data["dbp"]
+            patient_data["map"] = patient_data["dbp"] + (pulse_pressure / 3)
+            st.metric("Mean Arterial Pressure (mmHg)", f"{patient_data['map']:.1f}")
+            st.caption("MAP = DBP + (SBP - DBP) / 3")
 
         # Labs
         st.markdown("**Laboratory Values**")
@@ -1308,6 +1387,20 @@ def render_patient_explainer(models, scalers):
             patient_data["sodium"] = st.slider("Sodium (mEq/L)", 120, 160, 140)
             patient_data["potassium"] = st.slider("Potassium (mEq/L)", 2.0, 7.0, 4.0, 0.1)
             patient_data["hemoglobin"] = st.slider("Hemoglobin (g/dL)", 5.0, 20.0, 14.0, 0.1)
+
+        # Trend Features (V6 delta features)
+        st.markdown("**Trend Features** (Rate of Change)")
+        st.caption("These features capture how quickly vital signs are changing - important for early sepsis detection")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            patient_data["delta_hr"] = st.slider("HR Trend (bpm/hour)", -20.0, 20.0, 0.0, 0.5,
+                                                  help="Positive = increasing HR, Negative = decreasing")
+        with col2:
+            patient_data["delta_sbp"] = st.slider("SBP Trend (mmHg/hour)", -20.0, 20.0, 0.0, 0.5,
+                                                   help="Positive = increasing BP, Negative = decreasing (concerning)")
+        with col3:
+            patient_data["delta_temp"] = st.slider("Temp Trend (°C/hour)", -1.0, 1.0, 0.0, 0.05,
+                                                    help="Positive = rising fever, Negative = temperature dropping")
 
         # Demographics
         st.markdown("**Demographics**")
