@@ -14,6 +14,7 @@ import joblib
 import pickle
 from pathlib import Path
 from sklearn.metrics import roc_auc_score, confusion_matrix
+from sklearn.cluster import KMeans
 
 # ============================================================================
 # API CONFIGURATION
@@ -152,6 +153,14 @@ class PermutationImportanceResponse(BaseModel):
     n_iter: int
     baseline_auc: float
 
+class ClusterResponse(BaseModel):
+    """Cluster analysis response."""
+    cluster_id: List[int]
+    embeddings: List[List[float]]
+    summaries: List[Dict[str, Any]]
+    k: int
+    n_samples: int
+
 class MetadataResponse(BaseModel):
     """Model metadata response."""
     model_version: str
@@ -234,7 +243,8 @@ async def root():
             "/api/v1/predict",
             "/api/v1/analysis/metrics",
             "/api/v1/analysis/calibration",
-            "/api/v1/analysis/permutation-importance"
+            "/api/v1/analysis/permutation-importance",
+            "/api/v1/analysis/clusters"
         ]
     }
 
@@ -449,6 +459,86 @@ async def get_permutation_importance(
         importance_std=[round(f['std'], 4) for f in top_features],
         n_iter=n_iter,
         baseline_auc=round(baseline_auc, 4)
+    )
+
+@app.get("/api/v1/analysis/clusters", response_model=ClusterResponse)
+async def get_clusters(k: int = Query(default=3, ge=2, le=10)):
+    """
+    Cluster patients based on LSTM embeddings.
+
+    Parameters:
+    - k: Number of clusters (default: 3)
+    """
+    if model is None:
+        raise HTTPException(status_code=500, detail="Model not loaded")
+
+    X_test, y_test = load_test_data()
+    if X_test is None:
+        raise HTTPException(status_code=500, detail="Test data not available")
+
+    # Create embedding model from penultimate layer
+    # The model architecture: LSTM -> BatchNorm -> LSTM -> BatchNorm -> Dense(32) -> Dense(1)
+    # We want the output of the Dense(32) layer as embeddings
+    embedding_layer_idx = -2  # Second to last layer (Dense 32)
+    embedding_model = tf.keras.Model(
+        inputs=model.input,
+        outputs=model.layers[embedding_layer_idx].output
+    )
+
+    # Extract embeddings
+    embeddings = embedding_model.predict(X_test, verbose=0)
+
+    # Apply k-means clustering
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+    cluster_labels = kmeans.fit_predict(embeddings)
+
+    # Generate cluster summaries
+    y_true = y_test.astype(int)
+    summaries = []
+
+    for cluster_idx in range(k):
+        cluster_mask = cluster_labels == cluster_idx
+        cluster_size = int(cluster_mask.sum())
+        cluster_sepsis_rate = float(y_true[cluster_mask].mean()) if cluster_size > 0 else 0.0
+
+        # Get mean feature values for this cluster (first 19 features are clinical values)
+        cluster_features = X_test[cluster_mask, -1, :19]  # Last timestep, first 19 features
+        feature_means = cluster_features.mean(axis=0) if cluster_size > 0 else np.zeros(19)
+
+        # Find top 3 distinguishing features (highest absolute z-score from overall mean)
+        overall_means = X_test[:, -1, :19].mean(axis=0)
+        overall_stds = X_test[:, -1, :19].std(axis=0) + 1e-8
+        z_scores = (feature_means - overall_means) / overall_stds
+        top_feature_indices = np.argsort(np.abs(z_scores))[-3:][::-1]
+
+        distinguishing_features = []
+        for idx in top_feature_indices:
+            direction = "high" if z_scores[idx] > 0 else "low"
+            distinguishing_features.append({
+                "feature": FEATURES_19[idx],
+                "direction": direction,
+                "z_score": round(float(z_scores[idx]), 2)
+            })
+
+        summaries.append({
+            "cluster_id": cluster_idx,
+            "size": cluster_size,
+            "sepsis_rate": round(cluster_sepsis_rate, 3),
+            "risk_level": "High" if cluster_sepsis_rate > 0.6 else ("Moderate" if cluster_sepsis_rate > 0.4 else "Low"),
+            "distinguishing_features": distinguishing_features
+        })
+
+    # Reduce embeddings to 2D for visualization (using first 2 principal components)
+    from sklearn.decomposition import PCA
+    pca = PCA(n_components=2)
+    embeddings_2d = pca.fit_transform(embeddings)
+
+    return ClusterResponse(
+        cluster_id=cluster_labels.tolist(),
+        embeddings=embeddings_2d.tolist(),
+        summaries=summaries,
+        k=k,
+        n_samples=len(cluster_labels)
     )
 
 # ============================================================================
