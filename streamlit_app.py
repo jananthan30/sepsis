@@ -1049,6 +1049,148 @@ def render_model_performance(models, scalers):
         )
         st.plotly_chart(fig_dist, use_container_width=True)
 
+    # ===== Calibration Curve (Reliability Diagram) =====
+    st.subheader("Model Calibration")
+    st.markdown("""
+    **Calibration Analysis** - A well-calibrated model assigns probabilities that match observed event rates.
+    For example, among patients assigned 70% risk, approximately 70% should develop sepsis.
+    """)
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        # Create calibration curve by binning predictions into deciles
+        n_bins = 10
+        bin_edges = np.linspace(0, 1, n_bins + 1)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+
+        # Calculate mean predicted probability and observed rate for each bin
+        bin_indices = np.digitize(y_pred_prob, bin_edges[1:-1])
+
+        mean_predicted = []
+        observed_rate = []
+        bin_counts = []
+
+        for i in range(n_bins):
+            mask = bin_indices == i
+            if mask.sum() > 0:
+                mean_predicted.append(y_pred_prob[mask].mean())
+                observed_rate.append(y_true[mask].mean())
+                bin_counts.append(mask.sum())
+            else:
+                mean_predicted.append(np.nan)
+                observed_rate.append(np.nan)
+                bin_counts.append(0)
+
+        mean_predicted = np.array(mean_predicted)
+        observed_rate = np.array(observed_rate)
+        bin_counts = np.array(bin_counts)
+
+        # Create calibration plot
+        fig_cal = go.Figure()
+
+        # Perfect calibration line
+        fig_cal.add_trace(go.Scatter(
+            x=[0, 1], y=[0, 1],
+            mode='lines',
+            name='Perfect Calibration',
+            line=dict(color='#17202A', width=2, dash='dash')
+        ))
+
+        # Actual calibration curve
+        valid_mask = ~np.isnan(mean_predicted)
+        fig_cal.add_trace(go.Scatter(
+            x=mean_predicted[valid_mask],
+            y=observed_rate[valid_mask],
+            mode='lines+markers',
+            name='Model Calibration',
+            line=dict(color='#1A5276', width=3),
+            marker=dict(size=10, color='#1A5276', line=dict(color='white', width=2)),
+            hovertemplate='Mean Predicted: %{x:.2f}<br>Observed Rate: %{y:.2f}<br><extra></extra>'
+        ))
+
+        # Add confidence region (simplified)
+        fig_cal.add_trace(go.Scatter(
+            x=mean_predicted[valid_mask],
+            y=observed_rate[valid_mask],
+            fill='tozeroy',
+            fillcolor='rgba(26, 82, 118, 0.1)',
+            line=dict(color='rgba(0,0,0,0)'),
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+
+        fig_cal = apply_publication_style(fig_cal, "Calibration Curve (Reliability Diagram)")
+        fig_cal.update_layout(
+            height=400,
+            xaxis_title="<b>Mean Predicted Probability</b>",
+            yaxis_title="<b>Observed Sepsis Rate</b>",
+            xaxis=dict(range=[-0.02, 1.02], dtick=0.2),
+            yaxis=dict(range=[-0.02, 1.02], dtick=0.2),
+            legend=dict(x=0.02, y=0.98, xanchor='left', yanchor='top', bgcolor='rgba(255,255,255,0.9)')
+        )
+
+        # Calculate Brier Score
+        brier_score = np.mean((y_pred_prob - y_true) ** 2)
+
+        # Add Brier score annotation
+        fig_cal.add_annotation(
+            x=0.98, y=0.02,
+            xanchor='right', yanchor='bottom',
+            text=f"<b>Brier Score = {brier_score:.4f}</b>",
+            showarrow=False,
+            font=dict(size=14, color='#17202A'),
+            bgcolor='rgba(255,255,255,0.9)',
+            bordercolor='#17202A',
+            borderwidth=2,
+            borderpad=6
+        )
+
+        st.plotly_chart(fig_cal, use_container_width=True)
+
+    with col2:
+        # Calibration metrics and interpretation
+        st.markdown("#### Calibration Metrics")
+
+        # Brier Score
+        st.metric("Brier Score", f"{brier_score:.4f}",
+                  help="Lower is better. 0 = perfect, 0.25 = random for balanced classes")
+
+        # Expected Calibration Error (ECE)
+        valid_bins = bin_counts > 0
+        weights = bin_counts[valid_bins] / bin_counts[valid_bins].sum()
+        ece = np.sum(weights * np.abs(mean_predicted[valid_bins] - observed_rate[valid_bins]))
+        st.metric("Expected Calibration Error", f"{ece:.4f}",
+                  help="Weighted average of calibration error across bins. Lower is better.")
+
+        # Maximum Calibration Error (MCE)
+        mce = np.max(np.abs(mean_predicted[valid_bins] - observed_rate[valid_bins]))
+        st.metric("Max Calibration Error", f"{mce:.4f}",
+                  help="Worst calibration error across any bin")
+
+        st.markdown("---")
+        st.markdown("#### Interpretation")
+
+        if ece < 0.05:
+            st.success("**Well Calibrated**: Model probabilities closely match observed rates.")
+        elif ece < 0.10:
+            st.info("**Reasonably Calibrated**: Minor discrepancies between predicted and observed rates.")
+        elif ece < 0.15:
+            st.warning("**Moderately Calibrated**: Consider post-hoc calibration (e.g., Platt scaling).")
+        else:
+            st.error("**Poorly Calibrated**: Probabilities do not reflect true event rates. Post-hoc calibration recommended.")
+
+        st.markdown("---")
+        st.markdown("#### Bin Distribution")
+        # Show bin counts
+        bin_df_data = {
+            'Bin': [f'{bin_edges[i]:.1f}-{bin_edges[i+1]:.1f}' for i in range(n_bins)],
+            'Count': bin_counts.astype(int),
+            'Predicted': [f'{p:.2f}' if not np.isnan(p) else '-' for p in mean_predicted],
+            'Observed': [f'{o:.2f}' if not np.isnan(o) else '-' for o in observed_rate]
+        }
+        st.dataframe(pd.DataFrame(bin_df_data), hide_index=True, use_container_width=True)
+
     # Classification Report
     with st.expander("📝 Classification Report"):
         report = classification_report(y_true, y_pred_class, target_names=['Control', 'Sepsis'])
