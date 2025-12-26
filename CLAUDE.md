@@ -114,3 +114,30 @@ V4 generates publication-ready figures (PNG + PDF at 400 DPI):
 - `X_test.npy`, `y_test.npy`, `X_val.npy`, `y_val.npy` - Val/test data
 - `tensors_v4.npz` - Pre-built tensors
 - `eda/` - All EDA figures and CSVs
+
+## Maestro Context
+
+This project uses **Claude Maestro** for spec-driven development.
+See `maestro/` for product context, tech stack, and workflow preferences.
+
+### Maestro Files
+- `maestro/product.md` - Product context, users, and goals
+- `maestro/tech-stack.md` - Technical stack configuration
+- `maestro/workflow.md` - Development workflow preferences
+- `maestro/guidelines.md` - Code style guidelines
+- `maestro/tracks.md` - Track registry for feature development
+- `maestro/tracks/<track-id>/` - Individual track specs and plans
+
+### When Working on Features
+1. Check `maestro/tracks.md` for current work
+2. Follow specs in `maestro/tracks/<track-id>/spec.md`
+3. Execute plans in `maestro/tracks/<track-id>/plan.md`
+4. Use `/maestro:status` to see current progress
+
+### Common Maestro Commands
+```bash
+/maestro:new "Feature description"  # Start a new track
+/maestro:implement                   # Execute current track
+/maestro:status                      # Check progress
+/maestro:list                        # List all tracks
+```
